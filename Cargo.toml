@@ -1,0 +1,22 @@
+[package]
+name = "search_federation"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+async-trait = "0.1.85"
+datafusion = "43.0.0"
+datafusion-federation = { version = "0.3.3", features = ["sql"] }
+datafusion-table-providers = { git = "https://github.com/datafusion-contrib/datafusion-table-providers.git", features = [
+    "federation",
+    "postgres",
+    "postgres-federation",
+] }
+futures = "0.3.31"
+opensearch = "2.3.0"
+rustyline = "15.0.0"
+secrecy = "0.8"
+serde = { version = "1.0.217", features = ["derive"] }
+serde_json = "1.0.135"
+tokio = { version = "1.42.0", features = ["full"] }
+tokio-postgres = "0.7.12"
