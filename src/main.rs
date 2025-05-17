@@ -9,7 +9,7 @@ mod udf;
 async fn main() {
     let Some(arg2) = std::env::args().nth(1) else {
         eprintln!("Specify either `seed` or `repl`");
-        process::exit(1);
+        process::exit(1)
     };
 
     match arg2.as_str() {

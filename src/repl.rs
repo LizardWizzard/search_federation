@@ -1,3 +1,4 @@
+use std::slice::Iter;
 use std::sync::Arc;
 use std::{any::Any, collections::HashMap};
 
@@ -9,6 +10,7 @@ use datafusion::datasource::TableType;
 use datafusion::error::DataFusionError as DfError;
 use datafusion::error::Result as DfResult;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
+use datafusion::logical_expr::expr::ScalarFunction;
 use datafusion::logical_expr::TableProviderFilterPushDown;
 use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
@@ -134,6 +136,20 @@ impl OpenSearchExec {
                     }
                 })
             }
+            OpenSearchFilters::Wildcard {
+                field,
+                pattern,
+                case_insensitive,
+            } => json!({
+                "query": {
+                    "wildcard": {
+                        field: {
+                            "value": pattern,
+                            "case_insensitive": case_insensitive,
+                        }
+                    }
+                }
+            }),
         }
     }
 }
@@ -225,8 +241,60 @@ impl DisplayAs for OpenSearchExec {
                 "OpenSearchExec filters=[intervals(field={}, terms='{}' max_gap={})]",
                 field, terms, max_gap
             )),
+            OpenSearchFilters::Wildcard {
+                field,
+                pattern,
+                case_insensitive,
+            } => f.write_fmt(format_args!(
+                "OpenSearchExec filters=[wildcard(field={}, pattern='{}' case_insensitive={})]",
+                field, pattern, case_insensitive
+            )),
         }
     }
+}
+
+fn take_column<'a>(iter: &mut Iter<'a, Expr>, arg_name: &'static str) -> DfResult<&'a Column> {
+    let column_expr = iter.next().unwrap();
+    let Expr::Column(col) = column_expr else {
+        return Err(DfError::Execution(format!(
+            "Expected columnt reference for `{arg_name}` argument, got: {}",
+            column_expr
+        )));
+    };
+    Ok(col)
+}
+
+fn take_utf8_literal<'a>(iter: &mut Iter<'a, Expr>, arg_name: &'static str) -> DfResult<&'a str> {
+    let literal_expr = iter.next().unwrap();
+    let Expr::Literal(ScalarValue::Utf8(Some(literal))) = literal_expr else {
+        return Err(DfError::Execution(format!(
+            "Expected non null scalar value for `{arg_name}` argument, got: {}",
+            literal_expr
+        )));
+    };
+    Ok(literal)
+}
+
+fn take_bool_literal<'a>(iter: &mut Iter<'a, Expr>, arg_name: &'static str) -> DfResult<bool> {
+    let literal_expr = iter.next().unwrap();
+    let Expr::Literal(ScalarValue::Boolean(Some(literal))) = literal_expr else {
+        return Err(DfError::Execution(format!(
+            "Expected non null scalar value for `{arg_name}` argument, got: {}",
+            literal_expr
+        )));
+    };
+    Ok(*literal)
+}
+
+fn take_uint64_literal<'a>(iter: &mut Iter<'a, Expr>, arg_name: &'static str) -> DfResult<i64> {
+    let literal_expr = iter.next().unwrap();
+    let Expr::Literal(ScalarValue::Int64(Some(literal))) = literal_expr else {
+        return Err(DfError::Execution(format!(
+            "Expected non null scalar value for `{arg_name}` argument, got: {}",
+            literal_expr
+        )));
+    };
+    Ok(*literal)
 }
 
 #[derive(Debug)]
@@ -236,6 +304,64 @@ enum OpenSearchFilters {
         terms: String,
         max_gap: i64,
     },
+    Wildcard {
+        field: String,
+        pattern: String,
+        case_insensitive: bool,
+    },
+}
+
+impl OpenSearchFilters {
+    fn from_scalar_function(f: &ScalarFunction) -> DfResult<OpenSearchFilters> {
+        match f.name() {
+            "opensearch_intervals" => Self::from_intervals_function(f),
+            "opensearch_wildcard" => Self::from_wildcard_function(f),
+            unknown_name @ _ => Err(DfError::Execution(format!(
+                "unknown open search function: {unknown_name}"
+            ))),
+        }
+    }
+
+    fn from_intervals_function(f: &ScalarFunction) -> DfResult<OpenSearchFilters> {
+        if f.args.len() != 3 {
+            return Err(DfError::Internal(format!(
+                "This is a bug. Somehow got incorrect number of arguments to marker udf {:?}",
+                f.args
+            )));
+        }
+
+        let mut iter = f.args.iter();
+        let col = take_column(&mut iter, "field")?;
+        let terms = take_utf8_literal(&mut iter, "terms")?;
+        let max_gap = take_uint64_literal(&mut iter, "max_gaps")?;
+
+        Ok(OpenSearchFilters::Intervals {
+            field: col.name.to_owned(),
+            terms: terms.to_owned(),
+            max_gap,
+        })
+    }
+
+    fn from_wildcard_function(f: &ScalarFunction) -> DfResult<OpenSearchFilters> {
+        if f.args.len() != 3 {
+            return Err(DfError::Internal(format!(
+                "This is a bug. Somehow got incorrect number of arguments to marker udf {:?}",
+                f.args
+            )));
+        }
+
+        let mut iter = f.args.iter();
+
+        let col = take_column(&mut iter, "field")?;
+        let pattern = take_utf8_literal(&mut iter, "pattern")?;
+        let case_insensitive = take_bool_literal(&mut iter, "case_insensitive")?;
+
+        Ok(OpenSearchFilters::Wildcard {
+            field: col.name.to_owned(),
+            pattern: pattern.to_owned(),
+            case_insensitive,
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -260,6 +386,7 @@ impl OpenSearchTableProvider {
 
     fn filters_to_opensearch(&self, filters: &[Expr]) -> DfResult<OpenSearchFilters> {
         if filters.len() > 1 {
+            // TODO: support by issueing several queries
             return Err(DfError::NotImplemented(
                 "cant have more than one filter passed to opensearch".to_string(),
             ));
@@ -278,44 +405,7 @@ impl OpenSearchTableProvider {
             ));
         };
 
-        if scalar_function.args.len() != 3 {
-            return Err(DfError::Internal(format!(
-                "This is a bug. Somehow got incorrect number of arguments to marker udf {:?}",
-                scalar_function.args
-            )));
-        }
-
-        let mut iter = scalar_function.args.iter();
-
-        let field_expr = iter.next().unwrap();
-        let Expr::Column(col) = field_expr else {
-            return Err(DfError::Execution(format!(
-                "Expected columnt reference for `field` argument, got: {}",
-                field_expr
-            )));
-        };
-
-        let terms_expr = iter.next().unwrap();
-        let Expr::Literal(ScalarValue::Utf8(Some(terms))) = terms_expr else {
-            return Err(DfError::Execution(format!(
-                "Expected non null scalar value for `terms` argument, got: {}",
-                terms_expr
-            )));
-        };
-
-        let max_gap_expr = iter.next().unwrap();
-        let Expr::Literal(ScalarValue::Int64(Some(max_gap))) = max_gap_expr else {
-            return Err(DfError::Execution(format!(
-                "Expected non null scalar value for `max_gaps` argument, got: {}",
-                max_gap_expr
-            )));
-        };
-
-        Ok(OpenSearchFilters::Intervals {
-            field: col.name.to_owned(),
-            terms: terms.to_owned(),
-            max_gap: *max_gap,
-        })
+        OpenSearchFilters::from_scalar_function(scalar_function)
     }
 }
 
@@ -368,10 +458,8 @@ impl TableProvider for OpenSearchTableProvider {
                 continue;
             };
 
-            // TODO: validate parameters (must be literals)
-            if func.name() != OPENSEARCH_INTERVALS_MARKER_UDF_NAME {
+            if !udf::SUPPORTED_UDFS.contains(&func.name()) {
                 pushdown.push(TableProviderFilterPushDown::Unsupported);
-                continue;
             }
 
             // we suport exact filter pushdown for marker udf
@@ -400,14 +488,21 @@ pub fn register_opensearch(ctx: &SessionContext) {
     .expect("cant register opensearch");
 
     ctx.register_udf(udf::intervals());
+    ctx.register_udf(udf::wildcard());
 }
 
-pub async fn repl() {
+pub async fn make_context() -> SessionContext {
     let state = datafusion_federation::default_session_state();
     let ctx = SessionContext::new_with_state(state);
 
     register_postgres(&ctx).await;
     register_opensearch(&ctx);
+
+    ctx
+}
+
+pub async fn repl() {
+    let ctx = make_context().await;
 
     let mut rl = DefaultEditor::new().unwrap();
     if rl.load_history(".repl_history").is_err() {
