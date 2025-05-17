@@ -1,9 +1,6 @@
 use std::process;
 
-mod repl;
-pub mod rules;
-mod seed;
-mod udf;
+use search_federation::{repl, seed};
 
 #[tokio::main]
 async fn main() {
@@ -14,7 +11,10 @@ async fn main() {
 
     match arg2.as_str() {
         "seed" => seed::seed().await,
-        "repl" => repl::repl().await,
+        "repl" => {
+            let ctx = search_federation::make_context().await;
+            repl::repl(&ctx).await
+        }
         _ => {
             eprintln!("Specify either `seed` or `repl`");
             process::exit(1)

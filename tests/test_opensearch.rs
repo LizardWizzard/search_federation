@@ -2,7 +2,7 @@ use datafusion::{
     arrow::{array::RecordBatch, util::pretty::pretty_format_batches},
     prelude::SessionContext,
 };
-use search_federation::repl::make_context;
+use search_federation::make_context;
 
 async fn execute(ctx: &SessionContext, sql: &str) -> Vec<RecordBatch> {
     ctx.sql(sql).await.unwrap().collect().await.unwrap()
