@@ -21,14 +21,14 @@ Then invoke `cargo run -- repl` to get access to sql repl to execute queries.
 Example query:
 
 ```sql
-SELECT 
+SELECT
     opensearch_documents.id,
     pg_doc.content,
     pg_doc.type
-FROM opensearch_documents 
+FROM opensearch_documents
 JOIN postgres.public.documents pg_doc ON opensearch_documents.id = pg_doc.id
-WHERE 
-    opensearch_intervals(opensearch_documents.content,'postgres oracle', 2)
+WHERE
+    opensearch_intervals(opensearch_documents.content, 'postgres oracle', 2)
     AND pg_doc.type = 'news';
 ```
 
@@ -36,4 +36,4 @@ Note: it is not required that front-end uses sql. It can be something else that 
 
 ### Future work
 
-pg_statistics can be used to optimize the plan. I e to prioritize most cardinality reducing predicates. For example if there are just a few documents matching some non fulltext tpart of the query we could filter them first and then execute opensearch part on these documents only (querying them by id) or even evaluating predicates on the side of federated engine using tantivy for example. 
+pg_statistics can be used to optimize the plan. I e to prioritize most cardinality reducing predicates. For example if there are just a few documents matching some non fulltext part of the query we could filter them first and then execute opensearch part on these documents only (querying them by id) or even evaluating predicates on the side of federated engine using tantivy for example.

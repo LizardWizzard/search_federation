@@ -19,7 +19,6 @@ pub fn intervals() -> ScalarUDF {
         OPENSEARCH_INTERVALS_MARKER_UDF_NAME,
         // expects terms and max_gap
         vec![DataType::Utf8, DataType::Utf8, DataType::Int64],
-        // returns f64
         DataType::Boolean,
         Volatility::Immutable,
         intervals_udf,
