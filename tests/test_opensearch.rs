@@ -113,3 +113,34 @@ ORDER BY opensearch_documents.id
     .trim();
     assert_eq!(actual, expected);
 }
+
+#[tokio::test]
+async fn test_query_fuzzy() {
+    let ctx = make_context().await;
+
+    let sql = r#"
+SELECT
+    opensearch_documents.id,
+    pg_doc.content
+FROM opensearch_documents
+JOIN postgres.public.documents pg_doc ON opensearch_documents.id = pg_doc.id
+WHERE
+    opensearch_fuzzy(opensearch_documents.content, 'Pastgres')
+ORDER BY opensearch_documents.id
+    "#;
+
+    let result = execute(&ctx, sql).await;
+
+    let actual = format!("{}", pretty_format_batches(&result).unwrap());
+    let expected = r#"
++----+------------------------------------------------------+
+| id | content                                              |
++----+------------------------------------------------------+
+| 2  | Postgres is great                                    |
+| 3  | Postgres and Oracle are ok to use                    |
+| 4  | Postgres is rather good and is quite far from Oracle |
++----+------------------------------------------------------+
+        "#
+    .trim();
+    assert_eq!(actual, expected);
+}

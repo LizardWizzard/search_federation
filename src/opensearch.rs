@@ -100,6 +100,15 @@ impl OpenSearchExec {
                     }
                 }
             }),
+            OpenSearchFilters::Fuzzy { field, value } => json!({
+                "query": {
+                    "fuzzy": {
+                        field: {
+                            "value": value,
+                        }
+                    }
+                }
+            }),
         }
     }
 }
@@ -199,6 +208,10 @@ impl DisplayAs for OpenSearchExec {
                 "OpenSearchExec filters=[wildcard(field={}, pattern='{}' case_insensitive={})]",
                 field, pattern, case_insensitive
             )),
+            OpenSearchFilters::Fuzzy { field, value } => f.write_fmt(format_args!(
+                "OpenSearchExec filters=[fuzzy(field={}, value='{}')]",
+                field, value,
+            )),
         }
     }
 }
@@ -259,6 +272,10 @@ enum OpenSearchFilters {
         pattern: String,
         case_insensitive: bool,
     },
+    Fuzzy {
+        field: String,
+        value: String,
+    },
 }
 
 impl OpenSearchFilters {
@@ -266,6 +283,7 @@ impl OpenSearchFilters {
         match f.name() {
             "opensearch_intervals" => Self::from_intervals_function(f),
             "opensearch_wildcard" => Self::from_wildcard_function(f),
+            "opensearch_fuzzy" => Self::from_fuzzy_function(&f),
             unknown_name @ _ => Err(DfError::Execution(format!(
                 "unknown open search function: {unknown_name}"
             ))),
@@ -310,6 +328,25 @@ impl OpenSearchFilters {
             field: col.name.to_owned(),
             pattern: pattern.to_owned(),
             case_insensitive,
+        })
+    }
+
+    fn from_fuzzy_function(f: &ScalarFunction) -> DfResult<OpenSearchFilters> {
+        if f.args.len() != 2 {
+            return Err(DfError::Internal(format!(
+                "This is a bug. Somehow got incorrect number of arguments to marker udf {:?}",
+                f.args
+            )));
+        }
+
+        let mut iter = f.args.iter();
+
+        let col = take_column(&mut iter, "field")?;
+        let value = take_utf8_literal(&mut iter, "value")?;
+
+        Ok(OpenSearchFilters::Fuzzy {
+            field: col.name.to_owned(),
+            value: value.to_owned(),
         })
     }
 }
@@ -439,4 +476,5 @@ pub fn register_opensearch(ctx: &SessionContext) {
 
     ctx.register_udf(udf::intervals());
     ctx.register_udf(udf::wildcard());
+    ctx.register_udf(udf::fuzzy());
 }
